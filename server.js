@@ -6,6 +6,18 @@ const cors=require('cors')
 const app=express()
 app.use(cors())
 const upload=multer({dest:'uploads/'})
+
+
+//This function breaks a large text into smaller pieces (chunks)
+function splitText(text,chunkSize=500){
+    const chunks=[]
+    for(let i=0;i<text.length; i+=chunkSize){              //Basically jumping in steps of 500
+        chunks.push(text.slice(i,i+chubkSize))
+    }
+    return chunks
+}
+
+
 app.post('/upload',upload.single('file'),async(req,res)=>{
   try{
     const filePath=req.file.path
@@ -13,10 +25,18 @@ app.post('/upload',upload.single('file'),async(req,res)=>{
     const dataBuffer=fs.readFileSync(filePath)
     const data=await(pdfParse(dataBuffer))
     console.log("PDF text:\n", data.text)
+    
+    //chunking
+     const chunks = splitText(data.text)
+
+    console.log("Total chunks:", chunks.length)
+    console.log("First chunk:", chunks[0])
 
     res.json({
         message:"PDF processed successfully",
-        text:data.text.substring(0,500) // Return first 500 characters for preview
+        text:data.text.substring(0,500), // Return first 500 characters for preview
+        totalChunks: chunks.length,
+      previewChunk: chunks[0]
     });
 }catch(error){
     console.error(error)
@@ -57,3 +77,5 @@ app.post('/upload',upload.single('file'),async(req,res)=>{
 // Type	Meaning
 // GET	Get data
 // POST	Send data
+
+//chunking done to convert large text into smaller pieces for better processing in later stages of the RAG pipeline.
