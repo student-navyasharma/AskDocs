@@ -1,53 +1,87 @@
-const express=require('express')
-const multer=require('multer')
-const pdfParse=require('pdf-parse')
-const fs= require('fs')
-const cors=require('cors')
-const app=express()
+const express = require('express')
+const multer = require('multer')
+const pdfParse = require('pdf-parse')
+const fs = require('fs')
+const cors = require('cors')
+require('dotenv').config()
+
+const OpenAI = require("openai")
+
+const app = express()
 app.use(cors())
-const upload=multer({dest:'uploads/'})
+
+const upload = multer({ dest: 'uploads/' })
+
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY
+})
 
 
-//This function breaks a large text into smaller pieces (chunks)
-function splitText(text,chunkSize=500){
-    const chunks=[]
-    for(let i=0;i<text.length; i+=chunkSize){              //Basically jumping in steps of 500
-        chunks.push(text.slice(i,i+chubkSize))
-    }
-    return chunks
+// 🔹 Function: Split large text into chunks
+function splitText(text, chunkSize = 500) {
+  const chunks = []
+
+  for (let i = 0; i < text.length; i += chunkSize) {
+    chunks.push(text.slice(i, i + chunkSize))
+  }
+
+  return chunks
 }
 
 
-app.post('/upload',upload.single('file'),async(req,res)=>{
-  try{
-    const filePath=req.file.path
+// 🔹 Upload + Process + Embeddings
+app.post('/upload', upload.single('file'), async (req, res) => {
+  try {
+    const filePath = req.file.path
 
-    const dataBuffer=fs.readFileSync(filePath)
-    const data=await(pdfParse(dataBuffer))
-    console.log("PDF text:\n", data.text)
-    
-    //chunking
-     const chunks = splitText(data.text)
+    // Step 1: Read PDF
+    const dataBuffer = fs.readFileSync(filePath)
 
+    // Step 2: Extract text
+    const data = await pdfParse(dataBuffer)
+    console.log("PDF text extracted")
+
+    // Step 3: Chunking
+    const chunks = splitText(data.text)
     console.log("Total chunks:", chunks.length)
-    console.log("First chunk:", chunks[0])
 
+    // Step 4: Create embeddings
+    const embeddings = []
+
+    for (let chunk of chunks) {
+      const response = await openai.embeddings.create({
+        model: "text-embedding-3-small",
+        input: chunk
+      })
+
+      embeddings.push({
+        text: chunk,
+        embedding: response.data[0].embedding
+      })
+    }
+
+    // Step 5: Store globally (temporary)
+    global.documentData = embeddings
+
+    // Step 6: Send response
     res.json({
-        message:"PDF processed successfully",
-        text:data.text.substring(0,500), // Return first 500 characters for preview
-        totalChunks: chunks.length,
-      previewChunk: chunks[0]
-    });
-}catch(error){
+      message: "Embeddings created successfully",
+      totalChunks: chunks.length,
+      sampleChunk: chunks[0],
+      embeddingSize: embeddings[0].embedding.length
+    })
+
+  } catch (error) {
     console.error(error)
     res.status(500).send('Error processing PDF')
-}
-    });
+  }
+})
 
- app.listen(5000, () => {
-  console.log("Server running on port 5000");
-});
 
+// 🔹 Start server
+app.listen(5000, () => {
+  console.log("Server running on port 5000")
+})
 
 
 
@@ -79,3 +113,31 @@ app.post('/upload',upload.single('file'),async(req,res)=>{
 // POST	Send data
 
 //chunking done to convert large text into smaller pieces for better processing in later stages of the RAG pipeline.
+
+
+// ===== SIMPLE SUMMARY =====
+
+// API KEY:
+// Secret key used to access OpenAI services.
+// It tells OpenAI "this request is from me".
+
+// WHY .env:
+// To keep API key safe (not in code / GitHub).
+
+// EMBEDDINGS:
+// Convert text → numbers (vectors)
+// Helps machine understand meaning, not just words.
+
+// FLOW:
+// PDF → text → chunks
+// chunks → embeddings (using OpenAI + API key)
+// store embeddings
+
+// Later:
+// question → embedding
+// compare with stored embeddings
+// get best chunk → send to GPT → answer
+
+// ONE LINE:
+// API key = access
+// embeddings = understanding
