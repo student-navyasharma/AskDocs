@@ -10,6 +10,8 @@ const OpenAI = require("openai")
 const app = express()
 app.use(cors())
 
+app.use(express.json())
+
 const upload = multer({ dest: 'uploads/' })
 
 const openai = new OpenAI({
@@ -78,6 +80,71 @@ app.post('/upload', upload.single('file'), async (req, res) => {
 })
 
 
+//Ask question → find relevant part of PDF → generate answer
+app.post('/chat',async(req,res)=>{
+  try{
+    const { question } = req.body
+
+    if(!question){
+      return res.status(400).json({error:"Question is required"})
+    }
+
+    if(!global.documentData){
+      return res.status(400).json({error:"No document uploaded yet"})
+    }
+
+    //convert question to embedding
+    const qEmbedding=await openai.embeddings.create({
+       model: "text-embedding-3-small",
+      input: question
+    })
+
+     const questionVector = qEmbedding.data[0].embedding
+
+     // 🔹 Step 2: Find most similar chunk
+    function cosineSimilarity(a, b) {
+      return a.reduce((sum, val, i) => sum + val * b[i], 0)
+    }
+
+    let bestMatch = null
+    let maxScore = -Infinity
+
+    for (let item of global.documentData) {
+      const score = cosineSimilarity(item.embedding, questionVector)
+
+      if (score > maxScore) {
+        maxScore = score
+        bestMatch = item.text
+      }
+    }
+
+     // 🔹 Step 3: Ask GPT using that chunk
+    const completion = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [
+        {
+          role: "system",
+          content: "Answer only from the given context."
+        },
+        {
+          role: "user",
+          content: `Context: ${bestMatch}\n\nQuestion: ${question}`
+        }
+      ]
+    })
+
+     // 🔹 Step 4: Send answer
+    res.json({
+      answer: completion.choices[0].message.content
+    })
+
+  } catch (error) {
+    console.error(error)
+    res.status(500).send("Error in chat API")
+  }
+})
+
+
 // 🔹 Start server
 app.listen(5000, () => {
   console.log("Server running on port 5000")
@@ -141,3 +208,44 @@ app.listen(5000, () => {
 // ONE LINE:
 // API key = access
 // embeddings = understanding
+
+
+
+
+
+// ================= CHAT API LOGIC =================
+
+// 1. Take question from user (req.body)
+
+// 2. Convert question → embedding (vector)
+//    So it can be compared with document chunks
+
+// 3. Loop through all stored chunks (global.documentData)
+
+// 4. For each chunk:
+//    Compare its embedding with question embedding
+//    using cosine similarity (measures meaning similarity)
+
+// 5. Find the chunk with highest similarity
+//    → this is the most relevant part of the PDF
+
+// 6. Send this chunk as "context" to GPT along with question
+
+// 7. GPT generates answer using only that context
+
+// 8. Send final answer back to user
+
+// ================= ONE LINE =================
+// Question → embedding → find best chunk → send to GPT → get answer
+// ===============================================================
+
+//RAG flow in chat API
+// PDF → chunks → embeddings → store
+//                       ↓
+// User question → embedding
+//                       ↓
+// Find similar chunk  ← (Retrieval)
+//                       ↓
+// Send chunk + question ← (Augmentation)
+//                       ↓
+// GPT generates answer  ← (Generation)
