@@ -80,60 +80,88 @@ app.post('/upload', upload.single('file'), async (req, res) => {
 })
 
 
-//Ask question → find relevant part of PDF → generate answer
-app.post('/chat',async(req,res)=>{
-  try{
+// Ask question → find relevant part of PDF → generate answer
+app.post('/chat', async (req, res) => {
+  try {
     const { question } = req.body
 
-    if(!question){
-      return res.status(400).json({error:"Question is required"})
+    if (!question) {
+      return res.status(400).json({ error: "Question is required" })
     }
 
-    if(!global.documentData){
-      return res.status(400).json({error:"No document uploaded yet"})
+    if (!global.documentData) {
+      return res.status(400).json({ error: "No document uploaded yet" })
     }
 
-    //convert question to embedding
-    const qEmbedding=await openai.embeddings.create({
-       model: "text-embedding-3-small",
+    // 🔹 Step 1: Convert question to embedding
+    const qEmbedding = await openai.embeddings.create({
+      model: "text-embedding-3-small",
       input: question
     })
 
-     const questionVector = qEmbedding.data[0].embedding
+    const questionVector = qEmbedding.data[0].embedding
 
-     // 🔹 Step 2: Find most similar chunk
+    // 🔹 Step 2: Cosine similarity
     function cosineSimilarity(a, b) {
       return a.reduce((sum, val, i) => sum + val * b[i], 0)
     }
 
-    let bestMatch = null
-    let maxScore = -Infinity
+    // 🔹 Step 3: Score all chunks
+    let scores = []
 
     for (let item of global.documentData) {
       const score = cosineSimilarity(item.embedding, questionVector)
-
-      if (score > maxScore) {
-        maxScore = score
-        bestMatch = item.text
-      }
+      scores.push({ text: item.text, score })
     }
 
-     // 🔹 Step 3: Ask GPT using that chunk
+    // 🔹 Step 4: Sort by similarity
+    scores.sort((a, b) => b.score - a.score)
+
+    // 🔹 Step 5: Fallback check (VERY IMPORTANT)
+    if (scores[0].score < 0.2) {
+      return res.json({
+        answer: "I could not find relevant information in the document."
+      })
+    }
+
+    // 🔹 Step 6: Take top 3 chunks
+    const topChunks = scores.slice(0, 3)
+
+    // 🔹 Step 7: Combine context
+    const context = topChunks.map(c => c.text).join("\n\n")
+
+    // 🔹 Step 8: Ask GPT
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       messages: [
         {
           role: "system",
-          content: "Answer only from the given context."
+          content: `
+You are a helpful assistant.
+
+Answer the question ONLY using the provided context.
+If the answer is not present in the context, say:
+"I could not find the answer in the document."
+
+Be clear, concise, and structured.
+`
         },
         {
           role: "user",
-          content: `Context: ${bestMatch}\n\nQuestion: ${question}`
+          content: `
+Context:
+${context}
+
+Question:
+${question}
+
+Answer:
+`
         }
       ]
     })
 
-     // 🔹 Step 4: Send answer
+    // 🔹 Step 9: Send response
     res.json({
       answer: completion.choices[0].message.content
     })
@@ -143,7 +171,6 @@ app.post('/chat',async(req,res)=>{
     res.status(500).send("Error in chat API")
   }
 })
-
 
 // 🔹 Start server
 app.listen(5000, () => {
@@ -213,7 +240,7 @@ app.listen(5000, () => {
 
 
 
-// ================= CHAT API LOGIC =================
+// ================= CHAT API LOGIC (UPDATED RAG) =================
 
 // 1. Take question from user (req.body)
 
@@ -226,26 +253,37 @@ app.listen(5000, () => {
 //    Compare its embedding with question embedding
 //    using cosine similarity (measures meaning similarity)
 
-// 5. Find the chunk with highest similarity
-//    → this is the most relevant part of the PDF
+// 5. Store similarity scores for ALL chunks
 
-// 6. Send this chunk as "context" to GPT along with question
+// 6. Sort chunks by similarity (highest first)
 
-// 7. GPT generates answer using only that context
+// 7. Take TOP 3 most relevant chunks
+//    (better than top 1 → improves answer quality)
 
-// 8. Send final answer back to user
+// 8. Combine these chunks into a single "context"
+
+// 9. Check fallback:
+//    If similarity score is too low → no relevant info found
+
+// 10. Send context + question to GPT
+
+// 11. GPT generates answer strictly using given context
+
+// 12. Send final answer back to user
+
 
 // ================= ONE LINE =================
-// Question → embedding → find best chunk → send to GPT → get answer
+// Question → embedding → top 3 chunks → combine → GPT → answer
 // ===============================================================
 
-//RAG flow in chat API
+
+// ================= RAG FLOW =================
 // PDF → chunks → embeddings → store
 //                       ↓
 // User question → embedding
 //                       ↓
-// Find similar chunk  ← (Retrieval)
+// Find top 3 similar chunks ← (Retrieval)
 //                       ↓
-// Send chunk + question ← (Augmentation)
+// Combine chunks as context ← (Augmentation)
 //                       ↓
-// GPT generates answer  ← (Generation)
+// GPT generates answer      ← (Generation)
