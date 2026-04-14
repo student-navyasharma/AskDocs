@@ -9,7 +9,6 @@ const OpenAI = require("openai")
 
 const app = express()
 app.use(cors())
-
 app.use(express.json())
 
 const upload = multer({ dest: 'uploads/' })
@@ -19,11 +18,11 @@ const openai = new OpenAI({
 })
 
 
-// 🔹 Function: Split large text into chunks
-function splitText(text, chunkSize = 500) {
+// 🔹 Function: Split large text into chunks WITH OVERLAP
+function splitText(text, chunkSize = 500, overlap = 100) {
   const chunks = []
 
-  for (let i = 0; i < text.length; i += chunkSize) {
+  for (let i = 0; i < text.length; i += (chunkSize - overlap)) {
     chunks.push(text.slice(i, i + chunkSize))
   }
 
@@ -43,8 +42,8 @@ app.post('/upload', upload.single('file'), async (req, res) => {
     const data = await pdfParse(dataBuffer)
     console.log("PDF text extracted")
 
-    // Step 3: Chunking
-    const chunks = splitText(data.text)
+    // Step 3: Chunking (UPDATED)
+    const chunks = splitText(data.text, 500, 100)
     console.log("Total chunks:", chunks.length)
 
     // Step 4: Create embeddings
@@ -80,7 +79,7 @@ app.post('/upload', upload.single('file'), async (req, res) => {
 })
 
 
-// Ask question → find relevant part of PDF → generate answer
+// 🔹 Ask question → find relevant part → generate answer
 app.post('/chat', async (req, res) => {
   try {
     const { question } = req.body
@@ -93,7 +92,7 @@ app.post('/chat', async (req, res) => {
       return res.status(400).json({ error: "No document uploaded yet" })
     }
 
-    // 🔹 Step 1: Convert question to embedding
+    // 🔹 Step 1: Question embedding
     const qEmbedding = await openai.embeddings.create({
       model: "text-embedding-3-small",
       input: question
@@ -117,20 +116,23 @@ app.post('/chat', async (req, res) => {
     // 🔹 Step 4: Sort by similarity
     scores.sort((a, b) => b.score - a.score)
 
-    // 🔹 Step 5: Fallback check (VERY IMPORTANT)
+    // 🔹 Debug (optional but useful)
+    console.log("Top 3 scores:", scores.slice(0, 3))
+
+    // 🔹 Step 5: Fallback check
     if (scores[0].score < 0.2) {
       return res.json({
         answer: "I could not find relevant information in the document."
       })
     }
 
-    // 🔹 Step 6: Take top 3 chunks
+    // 🔹 Step 6: Top 3 chunks
     const topChunks = scores.slice(0, 3)
 
     // 🔹 Step 7: Combine context
     const context = topChunks.map(c => c.text).join("\n\n")
 
-    // 🔹 Step 8: Ask GPT
+    // 🔹 Step 8: LLM call
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       messages: [
@@ -172,6 +174,7 @@ Answer:
   }
 })
 
+
 // 🔹 Start server
 app.listen(5000, () => {
   console.log("Server running on port 5000")
@@ -179,111 +182,109 @@ app.listen(5000, () => {
 
 
 
-// PROJECT FLOW – AI CHAT WITH DOCUMENTS (STEP 1)
+// ================= PROJECT FLOW – AI CHAT WITH DOCUMENTS =================
 
-// 1. Client (Postman / Frontend) sends a POST request to the server with a PDF file
+// 1. Client (Postman / Frontend) sends a POST request with a PDF file
 
-// 2. The request hits the "/upload" route on the Express server running on port 5000
+// 2. Request hits "/upload" route on Express server (port 5000)
 
-// 3. Multer middleware handles the file upload and stores it in the "uploads/" folder
+// 3. Multer middleware uploads and stores file in "uploads/" folder
 
-// 4. The server reads the uploaded file using the File System (fs) module
+// 4. Server reads file using fs module
 
-// 5. pdf-parse processes the file and extracts the text content from the PDF
+// 5. pdf-parse extracts text from PDF
 
-// 6. The extracted text is printed in the server console for verification
+// 6. Extracted text is logged for verification
 
-// 7. The server sends a JSON response back to the client containing:
+// 7. Text is split into smaller chunks using chunking
 
-//    * Success message
-//    * First 500 characters of extracted text
+//    🔥 UPDATED: Overlapping Chunking
+//    - Each chunk overlaps with previous one
+//    - Prevents context loss at boundaries
+//    - Improves retrieval accuracy
 
-// 8. If any error occurs, the server returns an error response (status 500)
+// 8. Each chunk is converted into embeddings using OpenAI API
 
-// This forms the base for RAG pipeline where extracted text will later be converted into embeddings.
+// 9. Embeddings are stored in memory (global.documentData)
 
-// Type	Meaning
-// GET	Get data
-// POST	Send data
+// 10. Server responds with success message + metadata
 
-//chunking done to convert large text into smaller pieces for better processing in later stages of the RAG pipeline.
+// ===============================================================
 
 
-// ===== SIMPLE SUMMARY =====
+// ================= KEY CONCEPTS =================
 
 // API KEY:
-// Secret key used to access OpenAI services.
-// It tells OpenAI "this request is from me".
+// Secret key to access OpenAI services
 
 // WHY .env:
-// To keep API key safe (not in code / GitHub).
+// Keeps API key secure (not exposed in code)
 
 // EMBEDDINGS:
-// Convert text → numbers (vectors)
-// Helps machine understand meaning, not just words.
+// Convert text → numerical vectors
+// Helps compare meaning instead of exact words
 
-// FLOW:
-// PDF → text → chunks
-// chunks → embeddings (using OpenAI + API key)
-// store embeddings
+// CHUNKING:
+// Splitting large text into smaller parts
+
+// OVERLAPPING CHUNKING (NEW):
+// Each chunk shares some part with previous chunk
+// Ensures important context is not lost
+
+
+// ================= FLOW SUMMARY =================
+
+// PDF → text → chunks (with overlap)
+// chunks → embeddings → stored
 
 // Later:
 // question → embedding
 // compare with stored embeddings
-// get best chunk → send to GPT → answer
-
-// ONE LINE:
-// API key = access
-// embeddings = understanding
+// get best chunks → send to GPT → answer
 
 
+// ================= CHAT API LOGIC (RAG) =================
 
+// 1. Take question from user
 
+// 2. Convert question → embedding
 
-// ================= CHAT API LOGIC (UPDATED RAG) =================
+// 3. Loop through all stored chunks
 
-// 1. Take question from user (req.body)
+// 4. Compute cosine similarity with each chunk
 
-// 2. Convert question → embedding (vector)
-//    So it can be compared with document chunks
+// 5. Store similarity scores
 
-// 3. Loop through all stored chunks (global.documentData)
+// 6. Sort chunks (highest similarity first)
 
-// 4. For each chunk:
-//    Compare its embedding with question embedding
-//    using cosine similarity (measures meaning similarity)
+// 7. Select TOP 3 most relevant chunks
+//    (better than top 1 → richer context)
 
-// 5. Store similarity scores for ALL chunks
+// 8. Combine top chunks into a single "context"
 
-// 6. Sort chunks by similarity (highest first)
-
-// 7. Take TOP 3 most relevant chunks
-//    (better than top 1 → improves answer quality)
-
-// 8. Combine these chunks into a single "context"
-
-// 9. Check fallback:
-//    If similarity score is too low → no relevant info found
+// 9. Fallback check:
+//    If similarity score is too low → no relevant data
 
 // 10. Send context + question to GPT
 
-// 11. GPT generates answer strictly using given context
+// 11. GPT generates answer using ONLY provided context
 
-// 12. Send final answer back to user
+// 12. Return final answer to user
 
 
 // ================= ONE LINE =================
+
 // Question → embedding → top 3 chunks → combine → GPT → answer
-// ===============================================================
 
 
-// ================= RAG FLOW =================
-// PDF → chunks → embeddings → store
-//                       ↓
+// ================= FULL RAG FLOW =================
+
+// PDF → chunks (overlap) → embeddings → store
+//                             ↓
 // User question → embedding
-//                       ↓
-// Find top 3 similar chunks ← (Retrieval)
-//                       ↓
-// Combine chunks as context ← (Augmentation)
-//                       ↓
-// GPT generates answer      ← (Generation)
+//                             ↓
+// Find top 3 similar chunks  ← Retrieval
+//                             ↓
+// Combine chunks as context  ← Augmentation
+//                             ↓
+// GPT generates answer       ← Generation
