@@ -17,6 +17,10 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
 })
 
+// 🔹 GLOBAL MEMORY
+global.documentData = null
+global.chatHistory = []
+
 
 // 🔹 Function: Split large text into chunks WITH OVERLAP
 function splitText(text, chunkSize = 500, overlap = 100) {
@@ -35,18 +39,14 @@ app.post('/upload', upload.single('file'), async (req, res) => {
   try {
     const filePath = req.file.path
 
-    // Step 1: Read PDF
     const dataBuffer = fs.readFileSync(filePath)
 
-    // Step 2: Extract text
     const data = await pdfParse(dataBuffer)
     console.log("PDF text extracted")
 
-    // Step 3: Chunking (UPDATED)
     const chunks = splitText(data.text, 500, 100)
     console.log("Total chunks:", chunks.length)
 
-    // Step 4: Create embeddings
     const embeddings = []
 
     for (let chunk of chunks) {
@@ -61,10 +61,11 @@ app.post('/upload', upload.single('file'), async (req, res) => {
       })
     }
 
-    // Step 5: Store globally (temporary)
     global.documentData = embeddings
 
-    // Step 6: Send response
+    // 🔹 Reset chat history on new upload
+    global.chatHistory = []
+
     res.json({
       message: "Embeddings created successfully",
       totalChunks: chunks.length,
@@ -116,10 +117,9 @@ app.post('/chat', async (req, res) => {
     // 🔹 Step 4: Sort by similarity
     scores.sort((a, b) => b.score - a.score)
 
-    // 🔹 Debug (optional but useful)
     console.log("Top 3 scores:", scores.slice(0, 3))
 
-    // 🔹 Step 5: Fallback check
+    // 🔹 Step 5: Fallback
     if (scores[0].score < 0.2) {
       return res.json({
         answer: "I could not find relevant information in the document."
@@ -132,7 +132,18 @@ app.post('/chat', async (req, res) => {
     // 🔹 Step 7: Combine context
     const context = topChunks.map(c => c.text).join("\n\n")
 
-    // 🔹 Step 8: LLM call
+    // 🔹 Step 8: Add user question to history
+    global.chatHistory.push({
+      role: "user",
+      content: question
+    })
+
+    // 🔹 Limit history (last 6 messages = 3 Q&A pairs)
+    if (global.chatHistory.length > 6) {
+      global.chatHistory = global.chatHistory.slice(-6)
+    }
+
+    // 🔹 Step 9: LLM call with memory
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       messages: [
@@ -141,13 +152,13 @@ app.post('/chat', async (req, res) => {
           content: `
 You are a helpful assistant.
 
-Answer the question ONLY using the provided context.
-If the answer is not present in the context, say:
-"I could not find the answer in the document."
+Answer ONLY using the provided context.
+If answer not found, say: "I could not find the answer in the document."
 
-Be clear, concise, and structured.
+Be clear and concise.
 `
         },
+        ...global.chatHistory,
         {
           role: "user",
           content: `
@@ -163,10 +174,15 @@ Answer:
       ]
     })
 
-    // 🔹 Step 9: Send response
-    res.json({
-      answer: completion.choices[0].message.content
+    const answer = completion.choices[0].message.content
+
+    // 🔹 Step 10: Save assistant response
+    global.chatHistory.push({
+      role: "assistant",
+      content: answer
     })
+
+    res.json({ answer })
 
   } catch (error) {
     console.error(error)
@@ -288,3 +304,129 @@ app.listen(5000, () => {
 // Combine chunks as context  ← Augmentation
 //                             ↓
 // GPT generates answer       ← Generation
+
+
+
+
+// ================= CHAT HISTORY (MEMORY) – NEW =================
+
+// 🔹 WHY WE ADDED THIS
+// Earlier: Every question was independent (no memory)
+// Now: AI remembers previous conversation → supports follow-ups
+
+// 🔹 WHERE IN CODE
+
+// 1. Global memory storage
+// global.chatHistory = []
+// → Stores conversation as array of messages
+
+// Example structure:
+// [
+//   { role: "user", content: "What is AI?" },
+//   { role: "assistant", content: "AI is..." }
+// ]
+
+
+// 2. Adding user question to memory
+// global.chatHistory.push({
+//   role: "user",
+//   content: question
+// })
+// → Every new question is saved before calling GPT
+
+
+// 3. Sending memory to GPT
+// messages: [
+//   { role: "system", content: "..." },
+//   ...global.chatHistory,
+//   { role: "user", content: `Context + Question` }
+// ]
+
+// → This is VERY IMPORTANT
+// → GPT now sees:
+//    - past conversation
+//    - current context (from document)
+//    - current question
+
+// → This makes it conversational
+
+
+// 4. Saving GPT response
+// global.chatHistory.push({
+//   role: "assistant",
+//   content: answer
+// })
+// → So next question has both Q + A
+
+
+// 5. Limiting memory size
+// if (global.chatHistory.length > 6) {
+//   global.chatHistory = global.chatHistory.slice(-6)
+// }
+
+// → Keeps only last 6 messages (3 Q&A pairs)
+// → Prevents:
+//    - token overflow
+//    - slow responses
+//    - high cost
+
+
+// ================= HOW IT WORKS TOGETHER =================
+
+// WITHOUT MEMORY:
+// Q1 → Answer
+// Q2 → Answer (no relation with Q1)
+
+// WITH MEMORY:
+// Q1 → Answer
+// Q2 → AI sees Q1 + Answer → gives better response
+
+
+// ================= REAL FLOW WITH MEMORY =================
+
+// Step 1: User asks question
+// → stored in chatHistory
+
+// Step 2: Retrieve top 3 chunks (RAG)
+
+// Step 3: Send to GPT:
+//    - system prompt
+//    - previous chatHistory
+//    - current context
+//    - current question
+
+// Step 4: GPT generates answer
+
+// Step 5: Store answer in chatHistory
+
+// Step 6: Return answer
+
+
+// ================= IMPORTANT INTERVIEW POINT =================
+
+// Your system now has 2 components:
+
+// 1. RETRIEVAL (RAG)
+// → Finds relevant chunks from document
+
+// 2. MEMORY (CHAT HISTORY)
+// → Maintains conversation context
+
+// → Together:
+// = Conversational RAG System
+
+
+// ================= LIMITATION (VERY IMPORTANT) =================
+
+// Current limitation:
+
+// Old messages in chatHistory do NOT have document context attached
+
+// → Only current question gets fresh retrieved context
+
+// → So deep multi-step reasoning across turns may be imperfect
+
+
+// ================= ONE LINE SUMMARY =================
+
+// RAG + Chat History = Conversational AI over documents
