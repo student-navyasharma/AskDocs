@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>AskDocs AI</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <h1>📄 AskDocs AI</h1>
+
+  <!-- Upload Section -->
+  <div class="upload-box">
+    <input type="file" id="pdfFile" />
+    <button onclick="uploadPDF()">Upload PDF</button>
+  </div>
+
+  <!-- Chat Section -->
+  <div class="chat-box" id="chatBox"></div>
+
+  <div class="input-box">
+    <input type="text" id="question" placeholder="Ask something..." />
+    <button onclick="askQuestion()">Send</button>
+  </div>
+
+  <script src="script.js"></script>
+</body>
+</html>
